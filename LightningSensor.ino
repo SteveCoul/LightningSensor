@@ -115,12 +115,6 @@ int            Message::m_count = 0;
  *  
  * ******************************************************************************************************** */
 
-static int something_happened = 0;
-
-void ICACHE_RAM_ATTR lightning_interrupt() {
-  something_happened++;
-}
-
 static void _httpRoot() {
   String body = String("<HTML><HEAD><meta http-equiv=\"refresh\" content=\"10\"> </HEAD><BODY><H1>Howdly Doooodly Dooo - I'm a lightning detector apparently\n\n</H1>");
   class Message* m = Message::m_head;
@@ -182,29 +176,27 @@ void setup() {
   ls.powerUp();
   ls.clearStatistics();
   ls.setRequiredNumStrikes( 1 );
-  ls.setOutdoors();
-  ls.setNoiseFloor( 3 );
+  ls.setIndoors();
+  ls.setNoiseFloor( 7 );
   ls.setWatchdogThreshold( 2 );   
   ls.setSpikeRejection( 2 );
-  ls.enableDisturberDetection();
+  ls.disableDisturberDetection();
   (void)ls.calibrate();
 
   ls.dump();
-
-  Serial.println("Attach interrupt");
-  attachInterrupt(digitalPinToInterrupt(IRQ_PIN), lightning_interrupt, RISING );
 
   server.on("/", _httpRoot);
   server.onNotFound(_httpNotFound);
   server.begin();
 
   Serial.println("And off we go!");
+  ls.listen();
 }
 
 void loop() {
  
   server.handleClient();
-    if ( something_happened ) {
+    if ( ls.poll() ) {
       uint8_t i;
       delay(2);
 
@@ -221,7 +213,6 @@ void loop() {
         int km = ls.lightningDistanceInKm();
 		Serial.println( (new Message( Message::DISTANCE_UPDATE, km ))->toString() );
       }
-      something_happened = 0;
     }
   
 }

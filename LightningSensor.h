@@ -6,6 +6,10 @@
 class LightningSensor : public I2CDevice {
 public:
   LightningSensor( int address, int irqpin );
+  void enableInterrupt();
+  void disableInterrupt();
+  void listen();
+  int poll();
   void presetDefault();
   void powerUp();
   void powerDown();
@@ -15,6 +19,8 @@ public:
   void enableSRCO();
   void enableTRCO();
   void disableO();
+  uint32_t measureFrequency( int which, int divider );
+  int getFrequencyDivider();
   void setFrequencyDivider( uint8_t val );
   void setTuningCaps( uint8_t val );
   uint8_t getInterrupt();

@@ -2,12 +2,33 @@
 #include <Arduino.h>
 #include "LightningSensor.h"
 
-LightningSensor::LightningSensor( int address, int irq_pin ) : I2CDevice( address ), m_irq_pin( irq_pin )  { }
+static int ICACHE_RAM_ATTR something_happened = 0;
+
+void ICACHE_RAM_ATTR lightning_interrupt() {
+  something_happened++;
+}
+
+LightningSensor::LightningSensor( int address, int irq_pin ) : I2CDevice( address ), m_irq_pin( irq_pin )  { 
+}
+
+
+void LightningSensor::listen() { something_happened = 0; 
+enableInterrupt(); 
+	}
+int LightningSensor::poll() { if ( something_happened == 0 ) return 0; something_happened = 0; return 1; }
 
 void LightningSensor::presetDefault() { write( 0x3C, 0x96 ); }   
   
 void LightningSensor::powerUp() { clearPWD(); write( 0x3D, 0x96 ); delay(3); }
-  
+
+void LightningSensor::enableInterrupt() {  
+  attachInterrupt(digitalPinToInterrupt(m_irq_pin), lightning_interrupt, RISING );
+}
+
+void LightningSensor::disableInterrupt() {
+  detachInterrupt(digitalPinToInterrupt(m_irq_pin) );
+}
+
 void LightningSensor::powerDown() { setPWD(); }
 
 void LightningSensor::enableDisturberDetection() { clearMASK_DIST(); }
@@ -24,7 +45,12 @@ void LightningSensor::setFrequencyDivider( uint8_t val ) {   /* can actually set
     else val = 3;
     setLCO_FDIV( val );
 }
-  
+ 
+int LightningSensor::getFrequencyDivider() { 
+	int v = getLCO_FDIV();
+	return 16 << v;
+}
+ 
 void LightningSensor::setTuningCaps( uint8_t val ) {
     if ( val > 120 ) val = 120;
     readModifyWrite( 0x08, 0x0F, val>>3 );  
@@ -70,26 +96,35 @@ uint8_t LightningSensor::getWatchdogThreshold() { return getWDTH(); }
 void LightningSensor::setSpikeRejection( uint8_t val ) { if ( val > 15 ) val = 15; setSREJ( val ); } /* default 2 */
 uint8_t LightningSensor::getSpikeRejection() { return getSREJ(); }
 
+uint32_t LightningSensor::measureFrequency( int which, int divider ) {
+	uint32_t count;
+
+	setFrequencyDivider( divider );
+
+	if ( which == 0 ) enableLCO();
+	else if ( which == 1 ) enableSRCO();
+	else enableTRCO();
+
+	delay(2);
+ 	enableInterrupt();
+	something_happened = 0;
+	delay(1000);
+	disableInterrupt();
+	count = something_happened * divider;
+	disableO();
+	return count;
+}
+
 bool LightningSensor::calibrate() {
     Serial.println("Calibrating....");
-    int target = 500000/16, currentcount = 0, bestdiff = 0x7FFFFFFF, currdiff = 0;
+    int target = 500000, currentcount = 0, bestdiff = 0x7FFFFFFF, currdiff = 0;
     uint8_t bestTune = 0, currTune = 0;
-    long setUpTime;
-    uint16_t currIrq, prevIrq;
-    setFrequencyDivider(16);
-    enableLCO();
     for (currTune = 0; currTune <= 0x0F; currTune++) {
       readModifyWrite( 0x08, 0x0F, currTune );  
 
-      delay(2);
-      currentcount = 0;
-      prevIrq = digitalRead( m_irq_pin );
-      setUpTime = millis() + 1000;
-      while ( millis() < setUpTime ) {
-        currIrq = digitalRead( m_irq_pin );
-        if (currIrq > prevIrq) currentcount++;
-        prevIrq = currIrq;
-      }
+	  delay(2);
+      currentcount = measureFrequency( 0, 32 );
+
       currdiff = target - currentcount;
       if (currdiff < 0) currdiff = -currdiff;
       Serial.print("Tune "); Serial.print(currTune); Serial.print(" got count of "); Serial.print( currentcount ); Serial.print(" diff "); Serial.println( currdiff );
@@ -99,16 +134,16 @@ bool LightningSensor::calibrate() {
       }
     }
     readModifyWrite( 0x08, 0x0F, bestTune );  
-    delay(2);
-    disableO();
-    calibrateRCO();
-    delay(3);
    
     Serial.print(F("bestTune = "));
     Serial.println(bestTune);
     Serial.print(F("Difference ="));
     Serial.println(bestdiff);
-    return bestdiff > 109 ? false : true;
+
+    delay(100);
+    calibrateRCO();
+
+    return bestdiff > 17500 ? false : true;
 }
 
 void LightningSensor::dump() {
@@ -131,9 +166,13 @@ void LightningSensor::dump() {
     Serial.print("DISP_SRCO ");  Serial.println( getDISP_SRCO(), HEX );
     Serial.print("DISP_TRCO ");  Serial.println( getDISP_TRCO(), HEX );
     Serial.print("TUN_CAP ");  Serial.println( getTUN_CAP(), HEX );
+    
+	Serial.print( "LCO " ); Serial.print( measureFrequency( 0, 128 ) ); Serial.println(" Hz, want 500,000" ); 
+//	Serial.print( "SRCO " ); Serial.print( measureFrequency( 1, 128 ) ); Serial.println(" Hz, want 1,100,000" );
+//	Serial.print( "TRCO " ); Serial.print( measureFrequency( 2, 128 ) ); Serial.println(" Hz, want 32,768" );
 }
 
-void LightningSensor::calibrateRCO() { write( 0x3D, 0x96 ); }
+void LightningSensor::calibrateRCO() { write( 0x3D, 0x96 ); enableTRCO(); delay(5); disableO(); }
 
 uint8_t LightningSensor::getPWD() { return readBits( 0x00, 0, 0x01 ); }
 void LightningSensor::clearPWD()  { (void)readModifyWrite( 0x00, 0x01, 0x00 ); }
@@ -181,4 +220,5 @@ uint8_t LightningSensor::getDISP_TRCO() { return readBits( 0x08, 5, 0x01 ); }
   
 uint8_t LightningSensor::getTUN_CAP() { return readBits( 0x08, 0, 0x0F ); }
 void LightningSensor::setTUN_CAP( uint8_t val ) { readModifyWrite( 0x08, 0x0F, val>>3 );  }
+
 
